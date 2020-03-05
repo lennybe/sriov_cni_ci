@@ -46,7 +46,7 @@ N=$((1 + RANDOM % 128))
 export NETWORK=${NETWORK:-"192.168.$N"}
 
 #TODO add autodiscovering
-export MACVLAN_INTERFACE=${MACVLAN_INTERFACE:-eno1}
+export MACVLAN_INTERFACE=${MACVLAN_INTERFACE:-enp5s0f0}
 export SRIOV_INTERFACE=${SRIOV_INTERFACE:-auto_detect}
 export VFS_NUM=${VFS_NUM:-4}
 
@@ -311,6 +311,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+
 configure_multus
 if [ $? -ne 0 ]; then
     echo "Failed to configure Multus"
@@ -318,18 +319,49 @@ if [ $? -ne 0 ]; then
 fi
 
 
-sed -i 's/intel_sriov_netdevice/sriov/g' $WORKSPACE/sriov-network-device-plugin/deployments/sriov-crd.yaml
-kubectl create -f $WORKSPACE/sriov-network-device-plugin/deployments/sriov-crd.yaml
-kubectl create -f $(ls -l $WORKSPACE/sriov-network-device-plugin/deployments/*/sriovdp-daemonset.yaml|tail -n1|awk '{print $NF}')
-kubectl create -f $ARTIFACTS/configMap.yaml
 
-cp $WORKSPACE/sriov-network-device-plugin/deployments/sriov-crd.yaml $(ls -l $WORKSPACE/sriov-network-device-plugin/deployments/*/sriovdp-daemonset.yaml|tail -n1|awk '{print $NF}') $ARTIFACTS/
-screen -S multus_sriovdp -d -m  $WORKSPACE/sriov-network-device-plugin/build/sriovdp -logtostderr 10 2>&1|tee > $LOGDIR/sriovdp.log
+
+
+wget https://raw.githubusercontent.com/Mellanox/k8s-rdma-shared-dev-plugin/master/images/k8s-rdma-shared-dev-plugin-config-map.yaml -O $ARTIFACTS/k8s-rdma-shared-dev-plugin-config-map.yaml
+kubectl create -f $ARTIFACTS/k8s-rdma-shared-dev-plugin-config-map.yaml
+wget https://raw.githubusercontent.com/Mellanox/k8s-rdma-shared-dev-plugin/master/images/k8s-rdma-shared-dev-plugin-ds.yaml -O $ARTIFACTS/k8s-rdma-shared-dev-plugin-ds.yaml
+kubectl create -f $ARTIFACTS/k8s-rdma-shared-dev-plugin-ds.yaml
+wget https://raw.githubusercontent.com/intel/multus-cni/master/images/multus-daemonset.yml -O $ARTIFACTS/multus-daemonset.yml
+kubectl create -f $ARTIFACTS/multus-daemonset.yml
+wget https://raw.githubusercontent.com/Mellanox/ipoib-cni/master/images/ipoib-cni-daemonset.yaml -O $ARTIFACTS/ipoib-cni-daemonset.yaml
+kubectl create -f $ARTIFACTS/ipoib-cni-daemonset.yaml
+cat  > $ARTIFACTS/pod.yaml <<EOF
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ipoib-network
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: rdma/hca_shared_devices_a
+spec:
+  config: '{
+  "cniVersion": "0.3.1",
+  "type": "ipoib",
+  "name": "mynet",
+  "master": "ib0",
+  "ipam": {
+    "type": "host-local",
+    "subnet": "192.168.3.0/24",
+    "routes": [{
+      "dst": "0.0.0.0/0"
+    }],
+      "gateway": "192.168.3.1"
+  }
+}'
+EOF
+kubectl create -f $ARTIFACTS/pod.yaml
+wget https://raw.githubusercontent.com/Mellanox/k8s-rdma-shared-dev-plugin/master/example/test-hca-pod.yaml -O $ARTIFACTS/test-hca-pod.yaml
+kubectl create -f $ARTIFACTS/test-hca-pod.yaml
+
 echo "All code in $WORKSPACE"
 echo "All logs $LOGDIR"
 echo "All confs $ARTIFACTS"
 
 echo "Setup is up and running. Run following to start tests:"
-echo "# WORKSPACE=$WORKSPACE NETWORK=$NETWORK ./sriov_cni_test.sh"
+echo "# WORKSPACE=$WORKSPACE NETWORK=$NETWORK ./ib_cni_test.sh"
 
 exit $status

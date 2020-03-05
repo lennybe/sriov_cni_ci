@@ -17,73 +17,74 @@ export POLL_INTERVAL=${POLL_INTERVAL:-10}
 export NETWORK=${NETWORK:-'192.168'}
 
 export KUBECONFIG=${KUBECONFIG:-/var/run/kubernetes/admin.kubeconfig}
-
+export POD_NAME=test-hca-pod
 pushd $WORKSPACE
 
 
 function pod_create {
-    sriov_pod=$ARTIFACTS/sriov_pod.yaml
-    cat > $sriov_pod <<EOF
-apiVersion: v1
-kind: Pod
+    ib_pod=$ARTIFACTS/pod.yaml
+    cat  > $ib_pod <<EOF
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
 metadata:
-  name: mofed-test-pod-1
+  name: ipoib-network
   annotations:
-    k8s.v1.cni.cncf.io/networks: sriov-net1
+    k8s.v1.cni.cncf.io/resourceName: rdma/hca_shared_devices_a
 spec:
-  restartPolicy: OnFailure
-  containers:
-    - image: alpine
-      name: mofed-test-ctr
-      imagePullPolicy: IfNotPresent
-      securityContext:
-        capabilities:
-          add: ["IPC_LOCK"]
-      resources:
-        requests:
-          intel.com/sriov: 2
-        limits:
-          intel.com/sriov: 2
-      command:
-        - sh
-        - -c
-        - |
-          ls -l /sys/class/net
-          sleep 1000000
+  config: '{
+  "cniVersion": "0.3.1",
+  "type": "ipoib",
+  "name": "mynet",
+  "master": "ib0",
+  "ipam": {
+    "type": "host-local",
+    "subnet": "192.168.3.0/24",
+    "routes": [{
+      "dst": "0.0.0.0/0"
+    }],
+      "gateway": "192.168.3.1"
+  }
+}'
 EOF
-    kubectl get pods
-    kubectl delete -f $sriov_pod 2>&1|tee > /dev/null
-    sleep ${POLL_INTERVAL}
-    kubectl create -f $sriov_pod
 
-    pod_status=$(kubectl get pods | grep mofed-test-pod-1 |awk  '{print $3}')
+    kubectl get pods
+    kubectl delete -f $ib_pod 2>&1|tee > /dev/null
+    sleep ${POLL_INTERVAL}
+    kubectl create -f $ib_pod
+
+    kubectl delete -f $ARTIFACTS/${POD_NAME}.yaml
+    wget https://raw.githubusercontent.com/Mellanox/k8s-rdma-shared-dev-plugin/master/example/${POD_NAME}.yaml -O $ARTIFACTS/${POD_NAME}.yaml
+    kubectl create -f $ARTIFACTS/${POD_NAME}.yaml
+
+
+    pod_status=$(kubectl get pods | grep mofed-test-pod |awk  '{print $3}')
     let stop=$(date '+%s')+$TIMEOUT
     d=$(date '+%s')
     while [ $d -lt $stop ]; do
         echo "Waiting for pod to became Running"
-        pod_status=$(kubectl get pods | grep mofed-test-pod-1 |awk  '{print $3}')
+        pod_status=$(kubectl get pods | grep mofed-test-pod |awk  '{print $3}')
         if [ "$pod_status" == "Running" ]; then
             return 0
         elif [ "$pod_status" == "UnexpectedAdmissionError" ]; then
-            kubectl delete -f $sriov_pod
+            kubectl delete -f $ib_pod
             sleep ${POLL_INTERVAL}
-            kubectl create -f $sriov_pod
+            kubectl create -f $ib_pod
         fi
-        kubectl get pods | grep mofed-test-pod-1
-        kubectl describe pod mofed-test-pod-1
+        kubectl get pods | grep mofed-test-pod
+        kubectl describe pod mofed-test-pod
         sleep ${POLL_INTERVAL}
         d=$(date '+%s')
     done
-    echo "Error mofed-test-pod-1 is not up"
+    echo "Error ${POD_NAME} is not up"
     return 1
 }
 
 
 function test_pod {
-    kubectl exec -i mofed-test-pod-1 -- ip a
-    kubectl exec -i mofed-test-pod-1 -- ip addr show eth0
+    kubectl exec -i mofed-test-pod -- ip a
+    kubectl exec -i mofed-test-pod -- ip addr show eth0
     echo "Checking eth0 for address network $NETWORK"
-    kubectl exec -i mofed-test-pod-1 -- ip addr show eth0|grep "$NETWORK"
+    kubectl exec -i mofed-test-pod -- ip addr show eth0|grep "$NETWORK"
     status=$?
     if [ $status -ne 0 ]; then
         echo "Failed to find $NETWORK in eth0 address inside the pod"
@@ -99,5 +100,5 @@ test_pod
 status=$?
 echo "All logs $LOGDIR"
 echo "All confs $ARTIFACTS"
-echo "To stop K8S run # WORKSPACE=${WORKSPACE} ./sriov_cni_stop.sh"
+echo "To stop K8S run # WORKSPACE=${WORKSPACE} ./ib_cni_stop.sh"
 exit $status
